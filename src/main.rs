@@ -2,7 +2,13 @@ use clap::Parser;
 use reqwest;
 use serde::{Deserialize, Serialize};
 use serde_json::{self, json};
-use std::{error::Error, fs, path::Path, thread, time::Duration};
+use std::{
+    error::Error,
+    fs,
+    path::{Path, PathBuf},
+    thread,
+    time::Duration,
+};
 
 static PORKBUN_API_URL: &str = "https://porkbun.com/api/json/v3";
 
@@ -22,7 +28,7 @@ struct Args {
     secrets: String,
 
     /// Update time in seconds
-    #[arg(short, long, default_value_t=60)]
+    #[arg(short, long, default_value_t = 60)]
     time_update: u64,
 }
 
@@ -202,29 +208,32 @@ async fn update_dns(app_config: &AppConfig) -> Result<(), Box<dyn Error>> {
     };
 
     let current_subdomain_records = get_records_subdomain(&app_config, "A").await?;
-    if current_subdomain_records.len() == 0 {
-        // return Err("Could not retrieve any records with this domain, make sure you own it.".into());
-    }
 
     for subdomain in &app_config.subdomains {
+        let mut was_updated = false;
         match current_subdomain_records
             .iter()
             .find(|&r| r.name.eq(subdomain))
         {
             Some(record) => {
                 // Update subdomain
-                if record.content == current_ip {
-                    println!("Subdomain \"{subdomain}\" already up to date");
-                    continue;
+                if record.content != current_ip {
+                    was_updated = update_record(&app_config, &record, &current_ip)
+                        .await
+                        .is_ok();
                 }
-                update_record(&app_config, &record, &current_ip).await;
-                println!("Subdomain \"{subdomain}\" updated with IP {current_ip}");
             }
             None => {
                 // Create subdomain
-                create_record(&app_config, &subdomain, &current_ip).await;
-                println!("Subdomain \"{subdomain}\" updated with IP {current_ip}");
+                was_updated = create_record(&app_config, &subdomain, &current_ip)
+                    .await
+                    .is_ok();
             }
+        }
+        if was_updated {
+            println!("Subdomain \"{subdomain}\" updated with IP {current_ip}");
+        } else {
+            println!("Subdomain \"{subdomain}\" already up to date");
         }
     }
 
@@ -235,9 +244,15 @@ async fn update_dns(app_config: &AppConfig) -> Result<(), Box<dyn Error>> {
 async fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
 
-    let config_dir = dirs::config_dir().expect("Could not find configuration directory");
+    let config_dir: PathBuf;
+    if Path::new("/.dockerenv").exists() {
+        config_dir = PathBuf::from("/config");
+    } else {
+        config_dir = dirs::config_dir()
+            .expect("Could not find configuration directory")
+            .join("porkbun_ddns_rs");
+    }
 
-    let config_dir = config_dir.join("porkbun_ddns_rs");
     fs::create_dir_all(&config_dir).expect("Error creating configuration directory");
 
     let last_config_path = config_dir.join("last_config.json");
