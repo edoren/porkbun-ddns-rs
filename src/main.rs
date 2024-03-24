@@ -1,16 +1,43 @@
+use clap::Parser;
 use reqwest;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{self, json};
-use std::{error::Error, fs, thread, time::Duration};
+use std::{error::Error, fs, path::Path, thread, time::Duration};
 
 static PORKBUN_API_URL: &str = "https://porkbun.com/api/json/v3";
 
-#[derive(Deserialize, Debug)]
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    /// The domain to update
+    #[arg(required = true)]
+    domain: String,
+
+    /// The subdomains to update
+    #[arg(long, num_args=1.., required=true, value_delimiter=',')]
+    subdomains: Vec<String>,
+
+    /// The secrets.json file path
+    #[arg(long, required = true)]
+    secrets: String,
+
+    /// Update time in seconds
+    #[arg(short, long, default_value_t=60)]
+    time_update: u64,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
 struct AppConfig {
     api_key: String,
     secret_key: String,
     domain: String,
     subdomains: Vec<String>,
+}
+
+#[derive(Deserialize, Debug)]
+struct Secrets {
+    api_key: String,
+    secret_key: String,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -206,24 +233,31 @@ async fn update_dns(app_config: &AppConfig) -> Result<(), Box<dyn Error>> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let config_dir = dirs::config_dir().expect("Could not find configuration directory");
+    let args = Args::parse();
 
-    let cwd = std::env::current_dir().expect("Error getting current working directory");
+    let config_dir = dirs::config_dir().expect("Could not find configuration directory");
 
     let config_dir = config_dir.join("porkbun_ddns_rs");
     fs::create_dir_all(&config_dir).expect("Error creating configuration directory");
 
-    let config_path = cwd.join("config.json");
-    let old_config_path = config_dir.join("old_config.json");
+    let last_config_path = config_dir.join("last_config.json");
 
-    let app_config_contents: String =
-        fs::read_to_string(&config_path).expect("Failed to read configuration file");
-    let app_config: AppConfig = serde_json::from_str(app_config_contents.as_str())
-        .expect("Error parsing configuration file");
+    let secrets_path = Path::new(&args.secrets);
+    let secrets_contents: String =
+        fs::read_to_string(&secrets_path).expect("Failed to read secrets file");
+    let secrets: Secrets =
+        serde_json::from_str(secrets_contents.as_str()).expect("Error parsing configuration file");
 
-    if old_config_path.exists() {
+    let app_config = AppConfig {
+        api_key: secrets.api_key,
+        secret_key: secrets.secret_key,
+        domain: args.domain,
+        subdomains: args.subdomains,
+    };
+
+    if last_config_path.exists() {
         let old_app_config_contents =
-            fs::read_to_string(&old_config_path).expect("Failed to read old configuration file");
+            fs::read_to_string(&last_config_path).expect("Failed to read old configuration file");
         let old_app_config: AppConfig = serde_json::from_str(old_app_config_contents.as_str())
             .expect("Error parsing configuration file");
 
@@ -252,13 +286,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    let _ = fs::copy(config_path, old_config_path);
+    let last_config_contents =
+        serde_json::to_string_pretty(&app_config).expect("Could not store configuration");
+    fs::write(last_config_path, last_config_contents).expect("Could not store configuration");
 
     loop {
         let res = update_dns(&app_config).await;
         if res.is_err() {
             return res;
         }
-        thread::sleep(Duration::from_millis(60000));
+        thread::sleep(Duration::from_millis(args.time_update * 1000));
     }
 }
