@@ -1,4 +1,5 @@
 use clap::Parser;
+use log::info;
 use reqwest;
 use serde::{Deserialize, Serialize};
 use serde_json::{self, json};
@@ -231,9 +232,9 @@ async fn update_dns(app_config: &AppConfig) -> Result<(), Box<dyn Error>> {
             }
         }
         if was_updated {
-            println!("Subdomain \"{subdomain}\" updated with IP {current_ip}");
+            info!("Subdomain \"{subdomain}\" updated with IP {current_ip}");
         } else {
-            println!("Subdomain \"{subdomain}\" already up to date");
+            info!("Subdomain \"{subdomain}\" already up to date");
         }
     }
 
@@ -242,6 +243,16 @@ async fn update_dns(app_config: &AppConfig) -> Result<(), Box<dyn Error>> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    let env = env_logger::Env::default()
+        .filter_or("PORKBUN_LOG_LEVEL", "info")
+        .write_style_or("PORKBUN_LOG_STYLE", "always");
+
+    env_logger::Builder::from_env(env)
+        .format_module_path(false)
+        .format_target(false)
+        .format_indent(None)
+        .init();
+
     let args = Args::parse();
 
     let config_dir: PathBuf;
@@ -291,7 +302,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             for record in &old_records {
                 if difference.contains(&record.name) {
                     if let Ok(_) = delete_record(&old_app_config, &record).await {
-                        println!(
+                        info!(
                             "Subdomain \"{}\" removed from domain {}",
                             record.name, old_app_config.domain
                         );
