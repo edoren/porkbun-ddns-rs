@@ -257,7 +257,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let config_dir: PathBuf;
     if Path::new("/.dockerenv").exists() {
-        config_dir = PathBuf::from("/config");
+        config_dir = PathBuf::from("/data");
     } else {
         config_dir = dirs::config_dir()
             .expect("Could not find configuration directory")
