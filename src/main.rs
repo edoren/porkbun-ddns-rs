@@ -1,14 +1,18 @@
+use anyhow::{anyhow, Result};
 use clap::Parser;
-use log::info;
+use log::{error, info};
 use reqwest;
 use serde::{Deserialize, Serialize};
 use serde_json::{self, json};
 use std::{
-    error::Error,
     fs,
     path::{Path, PathBuf},
     thread,
     time::Duration,
+};
+use tracing_appender::rolling::{RollingFileAppender, Rotation};
+use tracing_subscriber::{
+    filter::LevelFilter, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer,
 };
 
 static PORKBUN_API_URL: &str = "https://porkbun.com/api/json/v3";
@@ -67,7 +71,7 @@ struct StatusResponse {
     status: String,
 }
 
-async fn get_records(app_config: &AppConfig) -> Result<Vec<DNSRecord>, Box<dyn Error>> {
+async fn get_records(app_config: &AppConfig) -> Result<Vec<DNSRecord>> {
     let record_domain = &app_config.domain;
     let body = json!({
         "apikey": &app_config.api_key,
@@ -96,13 +100,10 @@ async fn get_records(app_config: &AppConfig) -> Result<Vec<DNSRecord>, Box<dyn E
         return Ok(records);
     }
 
-    return Err("Failed to retrieve records".into());
+    return Err(anyhow!("Failed to retrieve records"));
 }
 
-async fn get_records_subdomain(
-    app_config: &AppConfig,
-    r#type: &str,
-) -> Result<Vec<DNSRecord>, Box<dyn Error>> {
+async fn get_records_subdomain(app_config: &AppConfig, r#type: &str) -> Result<Vec<DNSRecord>> {
     let records = get_records(&app_config).await?;
     let new_records = records
         .iter()
@@ -112,11 +113,7 @@ async fn get_records_subdomain(
     return Ok(new_records);
 }
 
-async fn create_record(
-    app_config: &AppConfig,
-    subdomain: &String,
-    content: &String,
-) -> Result<(), Box<dyn Error>> {
+async fn create_record(app_config: &AppConfig, subdomain: &String, content: &String) -> Result<()> {
     let body = json!({
         "apikey": &app_config.api_key,
         "secretapikey": &app_config.secret_key,
@@ -136,13 +133,13 @@ async fn create_record(
 
     let response = result.json::<StatusResponse>().await?;
     if response.status != "SUCCESS" {
-        return Err("API call failed".into());
+        return Err(anyhow!("API call failed"));
     }
 
     return Ok(());
 }
 
-async fn delete_record(app_config: &AppConfig, record: &DNSRecord) -> Result<(), Box<dyn Error>> {
+async fn delete_record(app_config: &AppConfig, record: &DNSRecord) -> Result<()> {
     let body = json!({
         "apikey": &app_config.api_key,
         "secretapikey": &app_config.secret_key
@@ -161,17 +158,13 @@ async fn delete_record(app_config: &AppConfig, record: &DNSRecord) -> Result<(),
 
     let response = result.json::<StatusResponse>().await?;
     if response.status != "SUCCESS" {
-        return Err("API call failed".into());
+        return Err(anyhow!("API call failed"));
     }
 
     return Ok(());
 }
 
-async fn update_record(
-    app_config: &AppConfig,
-    record: &DNSRecord,
-    content: &String,
-) -> Result<(), Box<dyn Error>> {
+async fn update_record(app_config: &AppConfig, record: &DNSRecord, content: &String) -> Result<()> {
     let body = json!({
         "apikey": &app_config.api_key,
         "secretapikey": &app_config.secret_key,
@@ -194,19 +187,17 @@ async fn update_record(
 
     let response = result.json::<StatusResponse>().await?;
     if response.status != "SUCCESS" {
-        return Err("API call failed".into());
+        return Err(anyhow!("API call failed"));
     }
 
     return Ok(());
 }
 
-async fn update_dns(app_config: &AppConfig) -> Result<(), Box<dyn Error>> {
-    let current_ip = match public_ip::addr().await {
-        Some(ip) => ip.to_string(),
-        None => {
-            return Err("Couldn't get an IP address".into());
-        }
-    };
+async fn update_dns(app_config: &AppConfig) -> Result<()> {
+    let current_ip = public_ip::addr()
+        .await
+        .ok_or(anyhow!("Couldn't get an IP address"))?
+        .to_string();
 
     let current_subdomain_records = get_records_subdomain(&app_config, "A").await?;
 
@@ -241,32 +232,54 @@ async fn update_dns(app_config: &AppConfig) -> Result<(), Box<dyn Error>> {
     return Ok(());
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let env = env_logger::Env::default()
-        .filter_or("PORKBUN_LOG_LEVEL", "info")
-        .write_style_or("PORKBUN_LOG_STYLE", "always");
-
-    env_logger::Builder::from_env(env)
-        .format_module_path(false)
-        .format_target(false)
-        .format_indent(None)
-        .init();
-
-    let args = Args::parse();
-
-    let config_dir: PathBuf;
+async fn main_task() -> Result<()> {
+    let app_config_dir: PathBuf;
     if Path::new("/.dockerenv").exists() {
-        config_dir = PathBuf::from("/data");
+        app_config_dir = PathBuf::from("/data");
     } else {
-        config_dir = dirs::config_dir()
+        app_config_dir = dirs::config_dir()
             .expect("Could not find configuration directory")
             .join("porkbun_ddns_rs");
     }
 
-    fs::create_dir_all(&config_dir).expect("Error creating configuration directory");
+    fs::create_dir_all(&app_config_dir).expect("Error creating configuration directory");
 
-    let last_config_path = config_dir.join("last_config.json");
+    // Logging
+
+    let logs_dir = app_config_dir.join("logs");
+    let default_filter = |filter: LevelFilter| {
+        EnvFilter::builder()
+            .with_default_directive(filter.into())
+            .from_env_lossy()
+    };
+
+    let file_appender = RollingFileAppender::builder()
+        .max_log_files(7)
+        .rotation(Rotation::DAILY)
+        .filename_prefix("porkbun_ddns")
+        .filename_suffix("log")
+        .build(logs_dir.clone())?;
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+    let file_layer = tracing_subscriber::fmt::layer()
+        .with_writer(non_blocking)
+        .with_ansi(false)
+        .with_filter(default_filter(LevelFilter::DEBUG))
+        .boxed();
+
+    let stdout_layer = tracing_subscriber::fmt::layer()
+        .with_filter(default_filter(LevelFilter::INFO))
+        .boxed();
+
+    let mut layers = Vec::new();
+    layers.push(file_layer);
+    layers.push(stdout_layer);
+    tracing_subscriber::registry().with(layers).init();
+
+    // App
+
+    let last_config_path = app_config_dir.join("last_config.json");
+
+    let args = Args::parse();
 
     let secrets_path = Path::new(&args.secrets);
     let secrets_contents: String =
@@ -319,8 +332,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
     loop {
         let res = update_dns(&app_config).await;
         if res.is_err() {
-            return res;
+            error!("{:#?}", res);
         }
-        thread::sleep(Duration::from_millis(args.time_update * 1000));
+        thread::sleep(Duration::from_secs(args.time_update));
     }
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let result = main_task().await;
+    if let Err(err) = &result {
+        error!("Error: {err:?}");
+        return result;
+    }
+    Ok(())
 }

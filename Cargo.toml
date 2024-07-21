@@ -10,12 +10,14 @@ path = "src/main.rs"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-tokio = { version = "1", features = ["full"] }
+anyhow = "1.0.86"
+clap = { version = "4", features = ["derive"] }
+dirs = { version = "5" }
+log = { version = "0.4" }
 public-ip = { version = "0.2" }
 reqwest = { version = "0.11", features = ["blocking", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1" }
-dirs = { version = "5" }
-clap = { version = "4", features = ["derive"] }
-log = { version = "0.4" }
-env_logger = { version = "0.11" }
+tokio = { version = "1", features = ["full"] }
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
