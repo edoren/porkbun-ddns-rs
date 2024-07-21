@@ -5,11 +5,10 @@ use reqwest;
 use serde::{Deserialize, Serialize};
 use serde_json::{self, json};
 use std::{
-    fs,
     path::{Path, PathBuf},
-    thread,
     time::Duration,
 };
+use tokio::{fs, time::sleep};
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{
     filter::LevelFilter, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer,
@@ -238,11 +237,13 @@ async fn main_task() -> Result<()> {
         app_config_dir = PathBuf::from("/data");
     } else {
         app_config_dir = dirs::config_dir()
-            .expect("Could not find configuration directory")
+            .ok_or(anyhow!("Could not find configuration directory"))?
             .join("porkbun_ddns_rs");
     }
 
-    fs::create_dir_all(&app_config_dir).expect("Error creating configuration directory");
+    fs::create_dir_all(&app_config_dir)
+        .await
+        .map_err(|e| anyhow!("Could not create configuration directory: {e:?}"))?;
 
     // Logging
 
@@ -282,10 +283,11 @@ async fn main_task() -> Result<()> {
     let args = Args::parse();
 
     let secrets_path = Path::new(&args.secrets);
-    let secrets_contents: String =
-        fs::read_to_string(&secrets_path).expect("Failed to read secrets file");
-    let secrets: Secrets =
-        serde_json::from_str(secrets_contents.as_str()).expect("Error parsing configuration file");
+    let secrets_contents: String = fs::read_to_string(&secrets_path)
+        .await
+        .map_err(|e| anyhow!("Failed to read secrets file: {e:?}"))?;
+    let secrets: Secrets = serde_json::from_str(secrets_contents.as_str())
+        .map_err(|e| anyhow!("Could not parse configuration file: {e:?}"))?;
 
     let app_config = AppConfig {
         api_key: secrets.api_key,
@@ -295,10 +297,11 @@ async fn main_task() -> Result<()> {
     };
 
     if last_config_path.exists() {
-        let old_app_config_contents =
-            fs::read_to_string(&last_config_path).expect("Failed to read old configuration file");
+        let old_app_config_contents = fs::read_to_string(&last_config_path)
+            .await
+            .map_err(|e| anyhow!("Failed to read old configuration file: {e:?}"))?;
         let old_app_config: AppConfig = serde_json::from_str(old_app_config_contents.as_str())
-            .expect("Error parsing configuration file");
+            .map_err(|e| anyhow!("Could not parse old configuration file: {e:?}"))?;
 
         let mut difference = vec![];
         if app_config.domain == old_app_config.domain {
@@ -325,16 +328,18 @@ async fn main_task() -> Result<()> {
         }
     }
 
-    let last_config_contents =
-        serde_json::to_string_pretty(&app_config).expect("Could not store configuration");
-    fs::write(last_config_path, last_config_contents).expect("Could not store configuration");
+    let last_config_contents = serde_json::to_string(&app_config)
+        .map_err(|e| anyhow!("Could format configuration: {e:?}"))?;
+
+    fs::write(last_config_path, last_config_contents)
+        .await
+        .map_err(|e| anyhow!("Could not store configuration: {e:?}"))?;
 
     loop {
-        let res = update_dns(&app_config).await;
-        if res.is_err() {
-            error!("{:#?}", res);
+        if let Err(err) = update_dns(&app_config).await {
+            error!("{err:?}");
         }
-        thread::sleep(Duration::from_secs(args.time_update));
+        sleep(Duration::from_secs(args.time_update)).await;
     }
 }
 
