@@ -88,7 +88,9 @@ async fn get_records(app_config: &AppConfig) -> Result<Vec<DNSRecord>> {
     let response = result.json::<RetrieveRecordsResponse>().await?;
 
     if response.status == "SUCCESS" {
-        let mut records = response.records.unwrap();
+        let mut records = response
+            .records
+            .ok_or(anyhow!("Records could not be parsed properly"))?;
         for record in &mut records {
             let subdomain = match record.name.strip_suffix(&subdomain_suffix) {
                 Some(val) => val,
@@ -200,6 +202,7 @@ async fn update_dns(app_config: &AppConfig) -> Result<()> {
 
     let current_subdomain_records = get_records_subdomain(&app_config, "A").await?;
 
+    let mut updated_subdomains = Vec::new();
     for subdomain in &app_config.subdomains {
         let mut was_updated = false;
         match current_subdomain_records
@@ -222,10 +225,15 @@ async fn update_dns(app_config: &AppConfig) -> Result<()> {
             }
         }
         if was_updated {
-            info!("Subdomain \"{subdomain}\" updated with IP {current_ip}");
-        } else {
-            info!("Subdomain \"{subdomain}\" already up to date");
+            updated_subdomains.push(subdomain.clone());
         }
+    }
+
+    if !updated_subdomains.is_empty() {
+        info!(
+            "Subdomains ({}) updated with IP {current_ip}",
+            updated_subdomains.join(", ")
+        );
     }
 
     return Ok(());
@@ -296,6 +304,9 @@ async fn main_task() -> Result<()> {
         subdomains: args.subdomains,
     };
 
+    info!("Domain: {}", app_config.domain);
+    info!("Subdomains: {}", app_config.subdomains.join(", "));
+
     if last_config_path.exists() {
         let old_app_config_contents = fs::read_to_string(&last_config_path)
             .await
@@ -306,7 +317,7 @@ async fn main_task() -> Result<()> {
         let mut difference = vec![];
         if app_config.domain == old_app_config.domain {
             for subdomain in &old_app_config.subdomains {
-                if !app_config.subdomains.contains(&subdomain) {
+                if !app_config.subdomains.contains(subdomain) {
                     difference.push(subdomain.clone())
                 }
             }
@@ -314,17 +325,23 @@ async fn main_task() -> Result<()> {
             difference = old_app_config.subdomains.clone();
         }
 
+        let mut deleted_subdomains = Vec::new();
         if let Ok(old_records) = get_records_subdomain(&old_app_config, "A").await {
-            for record in &old_records {
-                if difference.contains(&record.name) {
-                    if let Ok(_) = delete_record(&old_app_config, &record).await {
-                        info!(
-                            "Subdomain \"{}\" removed from domain {}",
-                            record.name, old_app_config.domain
-                        );
-                    };
+            for record in old_records {
+                if difference.contains(&record.name)
+                    && delete_record(&old_app_config, &record).await.is_ok()
+                {
+                    deleted_subdomains.push(record.name);
                 }
             }
+        }
+
+        if !deleted_subdomains.is_empty() {
+            info!(
+                "Subdomains ({}) removed from domain {}",
+                deleted_subdomains.join(", "),
+                old_app_config.domain
+            );
         }
     }
 
@@ -348,7 +365,6 @@ async fn main() -> Result<()> {
     let result = main_task().await;
     if let Err(err) = &result {
         error!("Error: {err:?}");
-        return result;
     }
-    Ok(())
+    return result;
 }
