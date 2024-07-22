@@ -114,7 +114,7 @@ async fn get_records_subdomain(app_config: &AppConfig, r#type: &str) -> Result<V
     return Ok(new_records);
 }
 
-async fn create_record(app_config: &AppConfig, subdomain: &String, content: &String) -> Result<()> {
+async fn create_record(app_config: &AppConfig, subdomain: &str, content: &str) -> Result<()> {
     let body = json!({
         "apikey": &app_config.api_key,
         "secretapikey": &app_config.secret_key,
@@ -165,7 +165,7 @@ async fn delete_record(app_config: &AppConfig, record: &DNSRecord) -> Result<()>
     return Ok(());
 }
 
-async fn update_record(app_config: &AppConfig, record: &DNSRecord, content: &String) -> Result<()> {
+async fn update_record(app_config: &AppConfig, record: &DNSRecord, content: &str) -> Result<()> {
     let body = json!({
         "apikey": &app_config.api_key,
         "secretapikey": &app_config.secret_key,
@@ -194,12 +194,7 @@ async fn update_record(app_config: &AppConfig, record: &DNSRecord, content: &Str
     return Ok(());
 }
 
-async fn update_dns(app_config: &AppConfig) -> Result<()> {
-    let current_ip = public_ip::addr()
-        .await
-        .ok_or(anyhow!("Couldn't get an IP address"))?
-        .to_string();
-
+async fn update_dns(app_config: &AppConfig, ip: &str) -> Result<Vec<String>> {
     let current_subdomain_records = get_records_subdomain(&app_config, "A").await?;
 
     let mut updated_subdomains = Vec::new();
@@ -211,17 +206,13 @@ async fn update_dns(app_config: &AppConfig) -> Result<()> {
         {
             Some(record) => {
                 // Update subdomain
-                if record.content != current_ip {
-                    was_updated = update_record(&app_config, &record, &current_ip)
-                        .await
-                        .is_ok();
+                if &record.content != ip {
+                    was_updated = update_record(&app_config, &record, ip).await.is_ok();
                 }
             }
             None => {
                 // Create subdomain
-                was_updated = create_record(&app_config, &subdomain, &current_ip)
-                    .await
-                    .is_ok();
+                was_updated = create_record(&app_config, &subdomain, ip).await.is_ok();
             }
         }
         if was_updated {
@@ -229,14 +220,7 @@ async fn update_dns(app_config: &AppConfig) -> Result<()> {
         }
     }
 
-    if !updated_subdomains.is_empty() {
-        info!(
-            "Subdomains ({}) updated with IP {current_ip}",
-            updated_subdomains.join(", ")
-        );
-    }
-
-    return Ok(());
+    return Ok(updated_subdomains);
 }
 
 async fn main_task() -> Result<()> {
@@ -304,9 +288,6 @@ async fn main_task() -> Result<()> {
         subdomains: args.subdomains,
     };
 
-    info!("Domain: {}", app_config.domain);
-    info!("Subdomains: {}", app_config.subdomains.join(", "));
-
     if last_config_path.exists() {
         let old_app_config_contents = fs::read_to_string(&last_config_path)
             .await
@@ -352,10 +333,42 @@ async fn main_task() -> Result<()> {
         .await
         .map_err(|e| anyhow!("Could not store configuration: {e:?}"))?;
 
+    let mut was_updated_recently = true;
     loop {
-        if let Err(err) = update_dns(&app_config).await {
-            error!("{err:?}");
+        let current_ip = match public_ip::addr().await {
+            Some(ip) => ip.to_string(),
+            None => {
+                error!("Couldn't get an IP address");
+                sleep(Duration::from_secs(args.time_update)).await;
+                continue;
+            }
+        };
+
+        match update_dns(&app_config, &current_ip).await {
+            Ok(updated_subdomains) => {
+                if !updated_subdomains.is_empty() {
+                    info!(
+                        "Subdomains ({}) updated with IP {current_ip}",
+                        updated_subdomains.join(", ")
+                    );
+                    was_updated_recently = true;
+                } else if was_updated_recently {
+                    let not_updated_subdomains: Vec<String> = app_config
+                        .subdomains
+                        .iter()
+                        .cloned()
+                        .filter(|s| !updated_subdomains.contains(s))
+                        .collect();
+                    info!(
+                        "Subdomains ({}) already up to date",
+                        not_updated_subdomains.join(", ")
+                    );
+                    was_updated_recently = false;
+                }
+            }
+            Err(err) => error!("{err:?}"),
         }
+
         sleep(Duration::from_secs(args.time_update)).await;
     }
 }
