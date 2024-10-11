@@ -14,7 +14,7 @@ use tracing_subscriber::{
     filter::LevelFilter, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer,
 };
 
-static PORKBUN_API_URL: &str = "https://porkbun.com/api/json/v3";
+static PORKBUN_API_URL: &str = "https://api.porkbun.com/api/json/v3";
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
