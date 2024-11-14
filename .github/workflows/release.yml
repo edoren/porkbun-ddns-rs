@@ -123,10 +123,12 @@ jobs:
         run: cargo build --release
 
       - name: Post Build | List output
+        shell: bash
         run: |
           ls -l target/
 
       - name: Post Build | Move binary
+        shell: bash
         run: |
           mkdir -p upload
 
