@@ -27,4 +27,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 openssl = { version = "0.10", default-features = false, optional = true }
 
 [features]
+default = ["native-tls"]
+
+native-tls = [
+    "openssl",
+    "reqwest/native-tls",
+]
+
 vendored = ["openssl?/vendored"]
