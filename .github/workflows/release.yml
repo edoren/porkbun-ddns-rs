@@ -122,8 +122,35 @@ jobs:
           toolchain: ${{ matrix.rust }}
           targets: ${{ matrix.target }}
 
+      - name: Setup | B(inary)Install
+        uses: cargo-bins/cargo-binstall@main
+
+      - name: Setup | Cross
+        if: matrix.cross == 'true'
+        run: cargo binstall cross -y
+
       - name: Build | Build
-        run: cargo build --release
+        shell: bash
+        run: |
+          if [[ "${{ matrix.xcode }}" == "true" ]]; then
+            export SDKROOT=$(xcrun -sdk macosx --show-sdk-path)
+            export MACOSX_DEPLOYMENT_TARGET=$(xcrun -sdk macosx --show-sdk-platform-version)
+          fi
+          
+          CMD="cargo"
+          
+          if [[ -n "${{ matrix.cross }}" ]]; then
+            CMD="cross"
+          fi
+          
+          OPTS="--release"
+          OPTS="$OPTS ${{ matrix.args }}"
+          
+          if [[ -n "${{ matrix.target }}" ]]; then
+            OPTS="$OPTS --target=${{ matrix.target }}"
+          fi
+
+          ${CMD} build ${OPTS}
 
       - name: Post Build | List output
         shell: bash
