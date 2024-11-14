@@ -1,0 +1,195 @@
+name: "Release"
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  init:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{steps.version.outputs.version}}
+      prerelease: ${{steps.state.outputs.prerelease}}
+    steps:
+      - name: Evaluate state
+        id: state
+        env:
+          HEAD_REF: ${{github.head_ref}}
+        run: |
+          test -z "${HEAD_REF}" && (echo 'do-publish=true' >> $GITHUB_OUTPUT)
+          if [[ "${{ github.event.ref }}" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo release=true >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event.ref }}" =~ ^refs/tags/v.*$ ]]; then
+              echo prerelease=true >> $GITHUB_OUTPUT
+          fi
+      - name: Set version
+        id: version
+        run: |
+          VERSION=$(echo "${{ github.ref }}" | sed -e 's,.*/\(.*\),\1,')
+          [[ "${{ github.ref }}" == "refs/tags/"* ]] && VERSION=$(echo $VERSION | sed -e 's/^v//')
+          [ "$VERSION" == "main" ] && VERSION=latest
+          echo "Version: $VERSION"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        rust:
+          - stable
+        target:
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+          - x86_64-apple-darwin
+          - x86_64-pc-windows-msvc
+          - aarch64-apple-darwin
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+            name: porkbun_ddns-x86_64-unknown-linux-gnu.tar.gz
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04
+            name: porkbun_ddns-aarch64-unknown-linux-gnu.tar.gz
+            cross: "true"
+            # cross's container image is too old for us
+            args: --features vendored
+
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
+            name: porkbun_ddns-x86_64-unknown-linux-musl.tar.gz
+            # install: |
+            #   sudo apt install -y musl-tools
+            args: --features vendored
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04
+            name: porkbun_ddns-aarch64-unknown-linux-musl.tar.gz
+            cross: "true"
+            args: --features vendored
+
+          - target: x86_64-apple-darwin
+            os: macos-13
+            name: porkbun_ddns-x86_64-apple-darwin.tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-14
+            name: porkbun_ddns-aarch64-apple-darwin.tar.gz
+
+          - target: x86_64-pc-windows-msvc
+            os: windows-2022
+            name: porkbun_ddns-x86_64-pc-windows-msvc.zip
+            ext: ".exe"
+            # install: |
+            #   echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
+            #   vcpkg install openssl:x64-windows-static-md
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Setup | Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup | Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Setup | Export GitHub Actions cache environment variables
+        uses: actions/github-script@v7
+        if: runner.os == 'Windows'
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+            core.exportVariable('VCPKG_BINARY_SOURCES', 'clear;x-gha,readwrite');
+
+      - name: Setup | Install dependencies
+        if: matrix.install != ''
+        run: ${{ matrix.install }}
+
+      - name: Setup | Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ matrix.rust }}
+          targets: ${{ matrix.target }}
+
+      - name: Build | Build
+        run: cargo build --release
+
+      - name: Post Build | List output
+        run: |
+          ls -l target/
+
+      - name: Post Build | Move binary
+        run: |
+          mkdir -p upload
+
+          # if we have an alternate target, there is a sub-directory
+          if [[ -f "target/release/porkbun_ddns${{ matrix.ext }}" ]]; then
+            SRC="target/release/porkbun_ddns${{ matrix.ext }}"
+          elif [[ -f "target/${{ matrix.target }}/release/porkbun_ddns${{ matrix.ext }}" ]]; then
+            SRC="target/${{ matrix.target }}/release/porkbun_ddns${{ matrix.ext }}"
+          else
+            echo "Unable to find output"
+            find target
+            false # stop build
+          fi
+
+          # for upload
+          cp -pv "${SRC}" upload/porkbun_ddns${{ matrix.ext }}
+
+      - name: Post Build | Strip binary
+        if: matrix.cross != 'true'
+        working-directory: upload
+        run: |
+          ls -l porkbun_ddns${{matrix.ext}}
+          strip porkbun_ddns${{matrix.ext}}
+          ls -l porkbun_ddns${{matrix.ext}}
+
+      - name: Post Build | Prepare artifacts [zip]
+        if: endsWith(matrix.name, '.zip')
+        working-directory: upload
+        run: |
+          7z a ${{ matrix.name }} porkbun_ddns${{matrix.ext}}
+
+      - name: Post Build | Prepare artifacts [tar.gz]
+        if: endsWith(matrix.name, '.tar.gz')
+        working-directory: upload
+        run: |
+          tar czvf ${{ matrix.name }} porkbun_ddns${{matrix.ext}}
+
+      - name: Post Build | Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: upload/${{ matrix.name }}
+          if-no-files-found: error
+
+  release:
+    needs:
+      - init
+      - build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Setup | Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup | Artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Setup | Checksums
+        run: for file in porkbun_ddns-*/porkbun_ddns-*; do openssl dgst -sha256 -r "$file" | awk '{print $1}' > "${file}.sha256"; done
+
+      - name: Build | Publish
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: porkbun_ddns-*/porkbun_ddns-*
