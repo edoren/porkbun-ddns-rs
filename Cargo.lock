@@ -1152,6 +1152,7 @@ dependencies = [
  "clap",
  "dirs",
  "log",
+ "openssl",
  "public-ip",
  "reqwest",
  "serde",

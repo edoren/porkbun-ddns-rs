@@ -58,16 +58,19 @@ jobs:
             name: porkbun_ddns-aarch64-unknown-linux-gnu.tar.gz
             cross: "true"
             # cross's container image is too old for us
+            args: --features vendored
 
           - target: x86_64-unknown-linux-musl
             os: ubuntu-24.04
             name: porkbun_ddns-x86_64-unknown-linux-musl.tar.gz
             install: |
               sudo apt install -y musl-tools
+            args: --features vendored
           - target: aarch64-unknown-linux-musl
             os: ubuntu-24.04
             name: porkbun_ddns-aarch64-unknown-linux-musl.tar.gz
             cross: "true"
+            args: --features vendored
 
           - target: x86_64-apple-darwin
             os: macos-13
@@ -80,9 +83,9 @@ jobs:
             os: windows-2022
             name: porkbun_ddns-x86_64-pc-windows-msvc.zip
             ext: ".exe"
-            # install: |
-            #   echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
-            #   vcpkg install openssl:x64-windows-static-md
+            install: |
+              echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
+              vcpkg install openssl:x64-windows-static-md
 
     runs-on: ${{ matrix.os }}
 
