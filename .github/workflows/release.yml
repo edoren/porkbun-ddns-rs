@@ -62,8 +62,8 @@ jobs:
           - target: x86_64-unknown-linux-musl
             os: ubuntu-24.04
             name: porkbun_ddns-x86_64-unknown-linux-musl.tar.gz
-            # install: |
-            #   sudo apt install -y musl-tools
+            install: |
+              sudo apt install -y musl-tools
           - target: aarch64-unknown-linux-musl
             os: ubuntu-24.04
             name: porkbun_ddns-aarch64-unknown-linux-musl.tar.gz
