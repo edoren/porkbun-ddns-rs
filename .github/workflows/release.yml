@@ -57,8 +57,7 @@ jobs:
             os: ubuntu-24.04
             name: porkbun_ddns-aarch64-unknown-linux-gnu.tar.gz
             cross: "true"
-            # cross's container image is too old for us
-            args: --features vendored
+            args: --features vendored # cross's container image is too old for us
 
           - target: x86_64-unknown-linux-musl
             os: ubuntu-24.04
@@ -101,7 +100,7 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ matrix.os }}-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Setup | Export GitHub Actions cache environment variables
         uses: actions/github-script@v7
@@ -112,7 +111,7 @@ jobs:
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
             core.exportVariable('VCPKG_BINARY_SOURCES', 'clear;x-gha,readwrite');
 
-      - name: Setup | Install dependencies
+      - name: Setup | Install Dependencies
         if: matrix.install != ''
         run: ${{ matrix.install }}
 
@@ -132,11 +131,6 @@ jobs:
       - name: Build | Build
         shell: bash
         run: |
-          if [[ "${{ matrix.xcode }}" == "true" ]]; then
-            export SDKROOT=$(xcrun -sdk macosx --show-sdk-path)
-            export MACOSX_DEPLOYMENT_TARGET=$(xcrun -sdk macosx --show-sdk-platform-version)
-          fi
-          
           CMD="cargo"
           
           if [[ -n "${{ matrix.cross }}" ]]; then
