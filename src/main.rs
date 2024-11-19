@@ -1,18 +1,24 @@
 use anyhow::{anyhow, Result};
 use clap::Parser;
-use log::{error, info};
+use log::{debug, error, info};
 use reqwest;
 use serde::{Deserialize, Serialize};
 use serde_json::{self, json};
 use std::{
+    net::{IpAddr, ToSocketAddrs},
     path::{Path, PathBuf},
+    str::FromStr,
     time::Duration,
 };
-use tokio::{fs, time::sleep};
+use tokio::{
+    fs,
+    time::{self, sleep},
+};
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{
     filter::LevelFilter, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer,
 };
+use url::Url;
 
 static PORKBUN_API_URL: &str = "https://api.porkbun.com/api/json/v3";
 
@@ -68,6 +74,23 @@ struct RetrieveRecordsResponse {
 #[derive(Deserialize, Debug)]
 struct StatusResponse {
     status: String,
+}
+
+async fn get_external_ip() -> Result<IpAddr> {
+    match public_ip::addr()
+        .await
+        .ok_or(anyhow!("Could not retrieve the external IP"))
+    {
+        Ok(IpAddr::V4(ip)) => {
+            if !ip.is_private() {
+                Ok(IpAddr::V4(ip))
+            } else {
+                Err(anyhow!("IP is private"))
+            }
+        }
+        Ok(IpAddr::V6(ip)) => Ok(IpAddr::V6(ip)),
+        Err(err) => Err(err),
+    }
 }
 
 async fn get_records(app_config: &AppConfig) -> Result<Vec<DNSRecord>> {
@@ -223,7 +246,14 @@ async fn update_dns(app_config: &AppConfig, ip: &str) -> Result<Vec<String>> {
     return Ok(updated_subdomains);
 }
 
-async fn main_task() -> Result<()> {
+async fn update_dns_with_current_ip(app_config: &AppConfig) -> Result<(Vec<String>, String)> {
+    let current_ip = get_external_ip().await?.to_string();
+    update_dns(&app_config, &current_ip)
+        .await
+        .map(|s| (s, current_ip))
+}
+
+async fn main_task(mut connection_status_rx: tokio::sync::watch::Receiver<bool>) -> Result<()> {
     let app_config_dir: PathBuf;
     if Path::new("/.dockerenv").exists() {
         app_config_dir = PathBuf::from("/data");
@@ -333,19 +363,11 @@ async fn main_task() -> Result<()> {
         .await
         .map_err(|e| anyhow!("Could not store configuration: {e:?}"))?;
 
+    let mut interval = time::interval(Duration::from_secs(args.time_update));
     let mut was_updated_recently = true;
     loop {
-        let current_ip = match public_ip::addr().await {
-            Some(ip) => ip.to_string(),
-            None => {
-                error!("Couldn't get an IP address");
-                sleep(Duration::from_secs(args.time_update)).await;
-                continue;
-            }
-        };
-
-        match update_dns(&app_config, &current_ip).await {
-            Ok(updated_subdomains) => {
+        match update_dns_with_current_ip(&app_config).await {
+            Ok((updated_subdomains, current_ip)) => {
                 if !updated_subdomains.is_empty() {
                     info!(
                         "Subdomains ({}) updated with IP {current_ip}",
@@ -366,18 +388,81 @@ async fn main_task() -> Result<()> {
                     was_updated_recently = false;
                 }
             }
-            Err(err) => error!("{err:?}"),
+            Err(err) => {
+                error!("Failed to update the DNS records, retrying");
+                debug!("{err:?}");
+                if *connection_status_rx.borrow() {
+                    sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
+            }
         }
 
-        sleep(Duration::from_secs(args.time_update)).await;
+        let mut has_connection = *connection_status_rx.borrow();
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    if has_connection {
+                        break;
+                    }
+                }
+                result = connection_status_rx.changed() => {
+                    if result.is_ok() {
+                        has_connection = *connection_status_rx.borrow_and_update();
+                        if !has_connection {
+                            error!("Connection to internet lost, waiting for reconnection");
+                            continue;
+                        }
+                        info!("Connection to internet restablished, updating the DNS records");
+                        was_updated_recently = true;
+                        interval.reset_immediately();
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn check_connection() -> bool {
+    if let Ok(porkurl) = Url::from_str(PORKBUN_API_URL) {
+        if let Some(domain) = porkurl.domain() {
+            return (domain.to_owned() + ":443").to_socket_addrs().is_ok();
+        }
+    }
+    return false;
+}
+
+async fn connection_check_task(connection_status_tx: tokio::sync::watch::Sender<bool>) {
+    let mut interval = time::interval(Duration::from_secs(1));
+
+    loop {
+        interval.tick().await;
+        let has_connection = check_connection().await;
+        if has_connection != *connection_status_tx.borrow() {
+            let _res = connection_status_tx.send(has_connection);
+        }
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let result = main_task().await;
+    let (connection_watch_tx, mut connection_watch_rx) =
+        tokio::sync::watch::channel(check_connection().await);
+
+    let has_connection = *connection_watch_rx.borrow_and_update();
+    if !has_connection {
+        println!("There is no connection, finishing");
+        return Ok(());
+    }
+
+    let (_, result) = tokio::join!(
+        connection_check_task(connection_watch_tx),
+        main_task(connection_watch_rx)
+    );
     if let Err(err) = &result {
         error!("Error: {err:?}");
     }
+
     return result;
 }
