@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use log::{debug, error, info};
 use reqwest;
@@ -79,7 +79,7 @@ struct StatusResponse {
 async fn get_external_ip() -> Result<IpAddr> {
     match public_ip::addr()
         .await
-        .ok_or(anyhow!("Could not retrieve the external IP"))
+        .context("Could not retrieve the external IP")
     {
         Ok(IpAddr::V4(ip)) => {
             if !ip.is_private() {
@@ -105,15 +105,17 @@ async fn get_records(app_config: &AppConfig) -> Result<Vec<DNSRecord>> {
         .post(format!("{PORKBUN_API_URL}/dns/retrieve/{record_domain}"))
         .body(body.to_string())
         .send()
-        .await?;
+        .await
+        .context("Failed to retrieve DNS records")?;
 
     let subdomain_suffix = format!(".{}", app_config.domain);
-    let response = result.json::<RetrieveRecordsResponse>().await?;
+    let response = result
+        .json::<RetrieveRecordsResponse>()
+        .await
+        .context("Could not parse retrieved DNS records")?;
 
     if response.status == "SUCCESS" {
-        let mut records = response
-            .records
-            .ok_or(anyhow!("Records could not be parsed properly"))?;
+        let mut records = response.records.context("No records found")?;
         for record in &mut records {
             let subdomain = match record.name.strip_suffix(&subdomain_suffix) {
                 Some(val) => val,
@@ -124,7 +126,7 @@ async fn get_records(app_config: &AppConfig) -> Result<Vec<DNSRecord>> {
         return Ok(records);
     }
 
-    return Err(anyhow!("Failed to retrieve records"));
+    return Err(anyhow!("Failed to retrieve DNS records"));
 }
 
 async fn get_records_subdomain(app_config: &AppConfig, r#type: &str) -> Result<Vec<DNSRecord>> {
@@ -153,11 +155,18 @@ async fn create_record(app_config: &AppConfig, subdomain: &str, content: &str) -
         .post(format!("{PORKBUN_API_URL}/dns/create/{record_domain}"))
         .body(body.to_string())
         .send()
-        .await?;
+        .await
+        .context("Failed to create DNS record")?;
 
-    let response = result.json::<StatusResponse>().await?;
+    let response = result
+        .json::<StatusResponse>()
+        .await
+        .context("Could not parse DNS create response")?;
     if response.status != "SUCCESS" {
-        return Err(anyhow!("API call failed"));
+        return Err(anyhow!(
+            "Invalid reponse status {} for DNS create endpoint",
+            response.status
+        ));
     }
 
     return Ok(());
@@ -178,11 +187,18 @@ async fn delete_record(app_config: &AppConfig, record: &DNSRecord) -> Result<()>
         ))
         .body(body.to_string())
         .send()
-        .await?;
+        .await
+        .context("Failed to delete DNS record")?;
 
-    let response = result.json::<StatusResponse>().await?;
+    let response = result
+        .json::<StatusResponse>()
+        .await
+        .context("Could not parse DNS delete response")?;
     if response.status != "SUCCESS" {
-        return Err(anyhow!("API call failed"));
+        return Err(anyhow!(
+            "Invalid reponse status {} for DNS delete endpoint",
+            response.status
+        ));
     }
 
     return Ok(());
@@ -207,11 +223,18 @@ async fn update_record(app_config: &AppConfig, record: &DNSRecord, content: &str
         ))
         .body(body.to_string())
         .send()
-        .await?;
+        .await
+        .context("Failed to edit DNS record")?;
 
-    let response = result.json::<StatusResponse>().await?;
+    let response = result
+        .json::<StatusResponse>()
+        .await
+        .context("Could not parse DNS edit response")?;
     if response.status != "SUCCESS" {
-        return Err(anyhow!("API call failed"));
+        return Err(anyhow!(
+            "Invalid reponse status {} for DNS edit endpoint",
+            response.status
+        ));
     }
 
     return Ok(());
@@ -259,7 +282,7 @@ async fn main_task(mut connection_status_rx: tokio::sync::watch::Receiver<bool>)
         app_config_dir = PathBuf::from("/data");
     } else {
         app_config_dir = dirs::config_dir()
-            .ok_or(anyhow!("Could not find configuration directory"))?
+            .context("Could not find configuration directory")?
             .join("porkbun_ddns_rs");
     }
 
@@ -452,8 +475,9 @@ async fn main() -> Result<()> {
 
     let has_connection = *connection_watch_rx.borrow_and_update();
     if !has_connection {
-        println!("There is no connection, finishing");
-        return Ok(());
+        let err = Err(anyhow!("Failed to establish connection to the internet"));
+        error!("Error: {err:?}");
+        return err;
     }
 
     let (_, result) = tokio::join!(
