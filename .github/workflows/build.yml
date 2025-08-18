@@ -83,17 +83,11 @@ jobs:
             os: windows-2022
             name: porkbun_ddns-x86_64-pc-windows-msvc.zip
             ext: ".exe"
-            install: |
-              echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
-              vcpkg install openssl:x64-windows-static-md
 
           - target: aarch64-pc-windows-msvc
             os: windows-2022
             name: porkbun_ddns-aarch64-pc-windows-msvc.zip
             ext: ".exe"
-            install: |
-              echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Append
-              vcpkg install openssl:arm64-windows-static-md
             cross: "true"
 
     runs-on: ${{ matrix.os }}
