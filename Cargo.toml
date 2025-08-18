@@ -17,9 +17,7 @@ anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }
 dirs = { version = "6.0" }
 log = { version = "0.4" }
-openssl = { version = "0.10", default-features = false, optional = true }
 public-ip = { version = "0.2" }
-reqwest = { version = "0.12", features = ["blocking", "json"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0" }
 tokio = { version = "1", features = ["full"] }
@@ -27,9 +25,12 @@ tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2.5"
 
+[target.'cfg(target_family = "windows")'.dependencies]
+reqwest = { version = "0.12", features = ["json"] }
+
+[target.'cfg(target_family = "unix")'.dependencies]
+openssl = { version = "0.10", default-features = false }
+reqwest = { version = "0.12", features = ["native-tls", "json"] }
+
 [features]
-default = ["native-tls"]
-
-native-tls = ["openssl", "reqwest/native-tls"]
-
-vendored = ["openssl?/vendored"]
+vendored = ["openssl/vendored"]
