@@ -288,7 +288,7 @@ async fn main_task(mut connection_status_rx: tokio::sync::watch::Receiver<bool>)
 
     fs::create_dir_all(&app_config_dir)
         .await
-        .map_err(|e| anyhow!("Could not create configuration directory: {e:?}"))?;
+        .map_err(|e| anyhow!("Could not create configuration directory: {e}"))?;
 
     // Logging
 
@@ -330,9 +330,9 @@ async fn main_task(mut connection_status_rx: tokio::sync::watch::Receiver<bool>)
     let secrets_path = Path::new(&args.secrets);
     let secrets_contents: String = fs::read_to_string(&secrets_path)
         .await
-        .map_err(|e| anyhow!("Failed to read secrets file: {e:?}"))?;
+        .map_err(|e| anyhow!("Failed to read secrets file: {e}"))?;
     let secrets: Secrets = serde_json::from_str(secrets_contents.as_str())
-        .map_err(|e| anyhow!("Could not parse configuration file: {e:?}"))?;
+        .map_err(|e| anyhow!("Could not parse configuration file: {e}"))?;
 
     let app_config = AppConfig {
         api_key: secrets.api_key,
@@ -344,9 +344,9 @@ async fn main_task(mut connection_status_rx: tokio::sync::watch::Receiver<bool>)
     if last_config_path.exists() {
         let old_app_config_contents = fs::read_to_string(&last_config_path)
             .await
-            .map_err(|e| anyhow!("Failed to read old configuration file: {e:?}"))?;
+            .map_err(|e| anyhow!("Failed to read old configuration file: {e}"))?;
         let old_app_config: AppConfig = serde_json::from_str(old_app_config_contents.as_str())
-            .map_err(|e| anyhow!("Could not parse old configuration file: {e:?}"))?;
+            .map_err(|e| anyhow!("Could not parse old configuration file: {e}"))?;
 
         let mut difference = vec![];
         if app_config.domain == old_app_config.domain {
@@ -380,11 +380,11 @@ async fn main_task(mut connection_status_rx: tokio::sync::watch::Receiver<bool>)
     }
 
     let last_config_contents = serde_json::to_string(&app_config)
-        .map_err(|e| anyhow!("Could format configuration: {e:?}"))?;
+        .map_err(|e| anyhow!("Could format configuration: {e}"))?;
 
     fs::write(last_config_path, last_config_contents)
         .await
-        .map_err(|e| anyhow!("Could not store configuration: {e:?}"))?;
+        .map_err(|e| anyhow!("Could not store configuration: {e}"))?;
 
     let mut interval = time::interval(Duration::from_secs(args.time_update));
     let mut was_updated_recently = true;
@@ -411,9 +411,9 @@ async fn main_task(mut connection_status_rx: tokio::sync::watch::Receiver<bool>)
                     was_updated_recently = false;
                 }
             }
-            Err(err) => {
+            Err(e) => {
                 error!("Failed to update the DNS records, retrying");
-                debug!("{err:?}");
+                debug!("{e}");
                 if *connection_status_rx.borrow() {
                     sleep(Duration::from_secs(1)).await;
                     continue;
@@ -475,17 +475,17 @@ async fn main() -> Result<()> {
 
     let has_connection = *connection_watch_rx.borrow_and_update();
     if !has_connection {
-        let err = Err(anyhow!("Failed to establish connection to the internet"));
-        error!("Error: {err:?}");
-        return err;
+        let e = anyhow!("Failed to establish connection to the internet");
+        error!("Error: {e}");
+        return Err(e);
     }
 
     let (_, result) = tokio::join!(
         connection_check_task(connection_watch_tx),
         main_task(connection_watch_rx)
     );
-    if let Err(err) = &result {
-        error!("Error: {err:?}");
+    if let Err(e) = &result {
+        error!("Error: {e}");
     }
 
     return result;
