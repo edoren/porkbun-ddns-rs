@@ -234,6 +234,7 @@ jobs:
     needs:
       - init
       - build
+      - release
     runs-on: ubuntu-24.04
     permissions:
       contents: read
